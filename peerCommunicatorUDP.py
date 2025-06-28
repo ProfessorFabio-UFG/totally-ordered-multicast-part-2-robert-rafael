@@ -94,7 +94,7 @@ class MsgHandler(threading.Thread):
         stopCount = stopCount + 1
         if stopCount == N:
           break  # stop loop when all other processes have finished
-       else:
+      else:
         peer_id = msg[0]
         msg_topic_id = msg[1]
 
