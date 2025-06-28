@@ -94,27 +94,46 @@ class MsgHandler(threading.Thread):
         stopCount = stopCount + 1
         if stopCount == N:
           break  # stop loop when all other processes have finished
-      else:
-        # --- MODIFICATION START ---
-        # A list of conversational message formats
-        chatty_messages = [
-           "O colega {peer_id} diz: 'Oi! Só passando aqui com a mensagem #{msg_num}!'",
-            "E aí? O colega {peer_id} está aqui. Minha mensagem é {msg_num}.",
-            "Você recebeu uma mensagem! Do colega {peer_id}, e diz: {msg_num}.",
-            "Psiu... O colega {peer_id} aqui. Tenho um segredo para você: é {msg_num}.",
-            "Transmissão do colega {peer_id}: O número mágico para hoje é {msg_num}.",
-            "Transmissão recebida do grande colega {peer_id}: '{msg_num}'"
-        ]
-        
+       else:
         peer_id = msg[0]
-        msg_num = msg[1]
+        msg_topic_id = msg[1]
+
+        # Respostas de conversação com base no "tópico" da mensagem (ID)
+        conversation_replies = {
+            0: [
+                "Olá, Peer {peer_id}! Tudo bem por aqui.",
+                "E aí, {peer_id}! Recebido. A começar os trabalhos.",
+                "Oi, {peer_id}! Que bom ver-te online."
+            ],
+            1: [
+                "Hmm, que pergunta interessante, {peer_id}. Vou pensar a respeito.",
+                "A propósito, {peer_id}, viste as últimas notícias?",
+                "Boa pergunta, {peer_id}! Apanhaste-me."
+            ],
+            2: [
+                "Hahaha, essa foi boa, {peer_id}!",
+                "{peer_id}, sempre com as melhores piadas.",
+                "Não conhecia essa, {peer_id}. Anotado!"
+            ],
+        }
         
-        # Pick a random message format
-        selected_message = random.choice(chatty_messages)
+        default_replies = [
+            "Interessante o que dizes, {peer_id}.",
+            "Entendido, {peer_id}. Próximo!",
+            "Ok, {peer_id}, a processar a tua mensagem."
+        ]
+
+        # Obter a lista de respostas para o tópico atual, ou usar a lista padrão
+        replies_list = conversation_replies.get(msg_topic_id, default_replies)
+
+        # Escolher uma resposta aleatória da lista
+        selected_reply = random.choice(replies_list)
         
-        # Print the fun, conversational message
-        print(selected_message.format(peer_id=peer_id, msg_num=msg_num))
-        # --- MODIFICATION END ---
+        # Formatar a resposta com o ID do remetente
+        formatted_reply = selected_reply.format(peer_id=peer_id)
+
+        # Imprimir a "conversa"
+        print(f"[Peer {self.myself}] ouviu do Peer {peer_id}: \"{formatted_reply}\"")
         
         logList.append(msg)
         
