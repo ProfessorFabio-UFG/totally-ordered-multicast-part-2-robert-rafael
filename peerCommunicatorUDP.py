@@ -58,9 +58,10 @@ def getListOfPeers():
   return PEERS
 
 class MsgHandler(threading.Thread):
-  def __init__(self, sock):
+  def __init__(self, sock, myself):
     threading.Thread.__init__(self)
     self.sock = sock
+    self.myself = myself
 
   def run(self):
     print('Handler is ready. Waiting for the handshakes...')
@@ -183,7 +184,7 @@ while 1:
   time.sleep(5)
 
   # Create receiving message handler
-  msgHandler = MsgHandler(recvSocket)
+  msgHandler = MsgHandler(recvSocket, myself)
   msgHandler.start()
   print('Handler started')
 
@@ -205,14 +206,29 @@ while 1:
     pass  # find a better way to wait for the handshakes
 
   # Send a sequence of data messages to all other processes 
+  conversation_starters = [
+    "Olá a todos! Alguém na escuta?",
+    "Vou lançar uma pergunta no ar para reflexão.",
+    "Alguém aí conhece uma boa piada?",
+    "Que tal falarmos sobre o tempo?",
+    "A iniciar uma nova ronda de discussões."
+  ]
+
+  # Enviar uma sequência de mensagens de dados para todos os outros processos 
   for msgNumber in range(0, nMsgs):
-    # Wait some random time between successive messages
+    # Esperar um tempo aleatório entre mensagens sucessivas
     time.sleep(random.randrange(10,100)/1000)
     msg = (myself, msgNumber)
     msgPack = pickle.dumps(msg)
+    
+    # Obter uma frase "inicial" para a mensagem a ser enviada
+    starter_index = msgNumber % len(conversation_starters)
+    starter_phrase = conversation_starters[starter_index]
+
     for addrToSend in PEERS:
       sendSocket.sendto(msgPack, (addrToSend,PEER_UDP_PORT))
-      print('Sent message ' + str(msgNumber))
+      
+    print(f"[Peer {myself}] enviou: \"{starter_phrase}\" (Tópico #{msgNumber})")
 
   # Tell all processes that I have no more messages to send
   for addrToSend in PEERS:
