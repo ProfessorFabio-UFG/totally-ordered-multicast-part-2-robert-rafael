@@ -6,21 +6,29 @@ import time
 import pickle
 from requests import get
 
-#handShakes = [] # not used; only if we need to check whose handshake is missing
+# --- Lógica do Relógio de Lamport e Fila ---
+# Relógio lógico de Lamport
+lamport_clock = 0
+# Fila para armazenar mensagens recebidas antes de serem entregues (Total Order)
+# Formato do item: {'content': (remetente, msg_num), 'timestamp': ts, 'sender_id': id, 'acks': set()}
+message_queue = []
+# Lock para acesso concorrente ao relógio e à fila de mensagens
+queue_lock = threading.Lock()
+# --- Fim da Lógica de Lamport ---
 
-# Counter to make sure we have received handshakes from all other processes
+# Contador para garantir que recebemos handshakes de todos os outros processos
 handShakeCount = 0
 
 PEERS = []
 
-# UDP sockets to send and receive data messages:
-# Create send socket
+# Sockets UDP para enviar e receber mensagens de dados:
+# Criar socket de envio
 sendSocket = socket(AF_INET, SOCK_DGRAM)
-#Create and bind receive socket
+#Criar e fazer bind do socket de receção
 recvSocket = socket(AF_INET, SOCK_DGRAM)
 recvSocket.bind(('0.0.0.0', PEER_UDP_PORT))
 
-# TCP socket to receive start signal from the comparison server:
+# Socket TCP para receber sinal de início do servidor de comparação:
 serverSock = socket(AF_INET, SOCK_STREAM)
 serverSock.bind(('0.0.0.0', PEER_TCP_PORT))
 serverSock.listen(1)
@@ -28,210 +36,175 @@ serverSock.listen(1)
 
 def get_public_ip():
   ipAddr = get('https://api.ipify.org').content.decode('utf8')
-  print('My public IP address is: {}'.format(ipAddr))
+  print('O meu endereço IP público é: {}'.format(ipAddr))
   return ipAddr
 
-# Function to register this peer with the group manager
+# Função para registar este peer com o gestor de grupo
 def registerWithGroupManager():
   clientSock = socket(AF_INET, SOCK_STREAM)
-  print ('Connecting to group manager: ', (GROUPMNGR_ADDR,GROUPMNGR_TCP_PORT))
+  print ('A ligar ao gestor de grupo: ', (GROUPMNGR_ADDR,GROUPMNGR_TCP_PORT))
   clientSock.connect((GROUPMNGR_ADDR,GROUPMNGR_TCP_PORT))
   ipAddr = get_public_ip()
   req = {"op":"register", "ipaddr":ipAddr, "port":PEER_UDP_PORT}
   msg = pickle.dumps(req)
-  print ('Registering with group manager: ', req)
+  print ('A registar no gestor de grupo: ', req)
   clientSock.send(msg)
   clientSock.close()
 
 def getListOfPeers():
   clientSock = socket(AF_INET, SOCK_STREAM)
-  print ('Connecting to group manager: ', (GROUPMNGR_ADDR,GROUPMNGR_TCP_PORT))
+  print ('A ligar ao gestor de grupo: ', (GROUPMNGR_ADDR,GROUPMNGR_TCP_PORT))
   clientSock.connect((GROUPMNGR_ADDR,GROUPMNGR_TCP_PORT))
   req = {"op":"list"}
   msg = pickle.dumps(req)
-  print ('Getting list of peers from group manager: ', req)
+  print ('A obter a lista de peers do gestor de grupo: ', req)
   clientSock.send(msg)
   msg = clientSock.recv(2048)
   PEERS = pickle.loads(msg)
-  print ('Got list of peers: ', PEERS)
+  print ('Lista de peers obtida: ', PEERS)
   clientSock.close()
   return PEERS
 
 class MsgHandler(threading.Thread):
-  def __init__(self, sock, myself):
+  def __init__(self, sock, myself, peers_list):
     threading.Thread.__init__(self)
     self.sock = sock
     self.myself = myself
+    self.peers = peers_list
+    self.logList = []
+
+  def deliver_messages(self):
+    """Verifica a fila e entrega mensagens que estão prontas (no topo e com todos os ACKs)."""
+    global message_queue
+    while True:
+        if not message_queue:
+            break
+        
+        # Ordena a fila por (timestamp, sender_id) para garantir a ordem total
+        message_queue.sort(key=lambda m: (m['timestamp'], m['sender_id']))
+        
+        head_message = message_queue[0]
+        
+        # Verifica se a mensagem no topo da fila recebeu ACK de todos os peers
+        if len(head_message['acks']) == N:
+            delivered_msg = message_queue.pop(0)
+            
+            # --- Lógica de Conversa (agora na entrega) ---
+            peer_id = delivered_msg['sender_id']
+            msg_content = delivered_msg['content'] # Tuplo (frase, número)
+            
+            # A lógica de conversa pode ser baseada no número da mensagem original
+            msg_topic_id = msg_content[1] 
+
+            conversation_replies = {
+                0: ["Olá, Peer {peer_id}! Tudo bem por aqui.", "E aí, {peer_id}! Recebido."],
+                1: ["Hmm, que pergunta interessante, {peer_id}.", "Boa pergunta, {peer_id}!"],
+                2: ["Hahaha, essa foi boa, {peer_id}!", "{peer_id}, sempre com as melhores piadas."],
+            }
+            default_replies = ["Interessante o que dizes, {peer_id}.", "Ok, {peer_id}, a processar."]
+            
+            replies_list = conversation_replies.get(msg_topic_id, default_replies)
+            selected_reply = random.choice(replies_list).format(peer_id=peer_id)
+            
+            original_starter_phrase = msg_content[0]
+
+            print(f"[Peer {self.myself} viu] Peer {peer_id} iniciou '{original_starter_phrase}' (T:{delivered_msg['timestamp']})")
+            print(f"    -> [Peer {self.myself}] pensa: \"{selected_reply}\"")
+            
+            self.logList.append(delivered_msg)
+        else:
+            # Se a mensagem no topo não está pronta, não podemos entregar mais nada
+            break
+
 
   def run(self):
-    print('Handler is ready. Waiting for the handshakes...')
+    print('O handler está pronto. A aguardar pelos handshakes...')
     
-    #global handShakes
-    global handShakeCount
+    global handShakeCount, lamport_clock
     
-    logList = []
-    
-    # Wait until handshakes are received from all other processes
-    # (to make sure that all processes are synchronized before they start exchanging messages)
+    # Esperar até que os handshakes sejam recebidos de todos os outros processos
     while handShakeCount < N:
-      msgPack = self.sock.recv(1024)
+      msgPack, addr = self.sock.recvfrom(1024)
       msg = pickle.loads(msgPack)
-      #print ('########## unpickled msgPack: ', msg)
       if msg[0] == 'READY':
-
-        # To do: send reply of handshake and wait for confirmation
-
         handShakeCount = handShakeCount + 1
-        #handShakes[msg[1]] = 1
-        print('--- Handshake received: ', msg[1])
+        print('--- Handshake recebido de: ', msg[1])
 
-    print('Secondary Thread: Received all handshakes. Entering the loop to receive messages.')
+    print('Thread Secundária: Recebidos todos os handshakes. A entrar no loop para receber mensagens.')
 
     stopCount=0 
     while True:                
-      msgPack = self.sock.recv(1024)   # receive data from client
+      msgPack, addr = self.sock.recvfrom(2048)   # receber dados do cliente
       msg = pickle.loads(msgPack)
-      if msg[0] == -1:   # count the 'stop' messages from the other processes
-        stopCount = stopCount + 1
-        if stopCount == N:
-          break  # stop loop when all other processes have finished
-      else:
-        peer_id = msg[0]
-        msg_topic_id = msg[1]
+      
+      with queue_lock:
+        # Atualiza o relógio de Lamport ao receber qualquer mensagem com timestamp
+        if isinstance(msg, tuple) and len(msg) > 2 and isinstance(msg[2], int):
+            lamport_clock = max(lamport_clock, msg[2]) + 1
 
-        # Respostas de conversação com base no "tópico" da mensagem (ID)
-        conversation_replies = {
-            0: [
-                "Olá, Peer {peer_id}! Tudo bem por aqui.",
-                "E aí, {peer_id}! Recebido. A começar os trabalhos.",
-                "Oi, {peer_id}! Que bom ver-te online."
-            ],
-            1: [
-                "Hmm, que pergunta interessante, {peer_id}. Vou pensar a respeito.",
-                "A propósito, {peer_id}, viste as últimas notícias?",
-                "Boa pergunta, {peer_id}! Apanhaste-me."
-            ],
-            2: [
-                "Hahaha, essa foi boa, {peer_id}!",
-                "{peer_id}, sempre com as melhores piadas.",
-                "Não conhecia essa, {peer_id}. Anotado!"
-            ],
-        }
-        
-        default_replies = [
-            "Interessante o que dizes, {peer_id}.",
-            "Entendido, {peer_id}. Próximo!",
-            "Ok, {peer_id}, a processar a tua mensagem."
-        ]
+        if msg[0] == 'DATA': # Formato: ('DATA', (starter_phrase, msgNumber), timestamp, sender_id)
+            _, content, timestamp, sender_id = msg
+            
+            # Adiciona a mensagem à fila
+            new_msg_item = {'content': content, 'timestamp': timestamp, 'sender_id': sender_id, 'acks': {self.myself}}
+            message_queue.append(new_msg_item)
+            
+            # Envia ACK para todos
+            lamport_clock += 1
+            ack_msg = ('ACK', timestamp, sender_id, lamport_clock, self.myself)
+            ack_pack = pickle.dumps(ack_msg)
+            for peer_addr in self.peers:
+                sendSocket.sendto(ack_pack, (peer_addr, PEER_UDP_PORT))
 
-        # Obter a lista de respostas para o tópico atual, ou usar a lista padrão
-        replies_list = conversation_replies.get(msg_topic_id, default_replies)
+        elif msg[0] == 'ACK': # Formato: ('ACK', orig_ts, orig_sender, ack_ts, acker_id)
+            _, orig_ts, orig_sender, _, acker_id = msg
+            
+            # Encontra a mensagem correspondente na fila e adiciona o ACK
+            for m in message_queue:
+                if m['timestamp'] == orig_ts and m['sender_id'] == orig_sender:
+                    m['acks'].add(acker_id)
+                    break
 
-        # Escolher uma resposta aleatória da lista
-        selected_reply = random.choice(replies_list)
+        elif msg[0] == -1:   # contar as mensagens 'stop' dos outros processos
+            stopCount = stopCount + 1
+            if stopCount == N:
+                break
         
-        # Formatar a resposta com o ID do remetente
-        formatted_reply = selected_reply.format(peer_id=peer_id)
+        # Tenta entregar mensagens após cada evento
+        self.deliver_messages()
 
-        # Imprimir a "conversa"
-        print(f"[Peer {self.myself}] ouviu do Peer {peer_id}: \"{formatted_reply}\"")
-        
-        logList.append(msg)
-        
-    # Write log file
-    logFile = open('logfile'+str(myself)+'.log', 'w')
-    logFile.writelines(str(logList))
+    # Escrever ficheiro de log
+    logFile = open('logfile'+str(self.myself)+'.log', 'w')
+    # O logList já estará ordenado devido à entrega ordenada
+    logFile.writelines(str(self.logList))
     logFile.close()
     
-    # Send the list of messages to the server (using a TCP socket) for comparison
-    print('Sending the list of messages to the server for comparison...')
+    print('A enviar o ficheiro de log ordenado para o servidor...')
     clientSock = socket(AF_INET, SOCK_STREAM)
     clientSock.connect((SERVER_ADDR, SERVER_PORT))
-    msgPack = pickle.dumps(logList)
+    msgPack = pickle.dumps(self.logList)
     clientSock.send(msgPack)
     clientSock.close()
     
-    # Reset the handshake counter
-    handShakeCount = 0
-
     exit(0)
 
-# Function to wait for start signal from comparison server:
 def waitToStart():
   (conn, addr) = serverSock.accept()
   msgPack = conn.recv(1024)
   msg = pickle.loads(msgPack)
   myself = msg[0]
   nMsgs = msg[1]
-  conn.send(pickle.dumps('Peer process '+str(myself)+' started.'))
+  conn.send(pickle.dumps('Processo peer '+str(myself)+' iniciado.'))
   conn.close()
   return (myself,nMsgs)
 
-# From here, code is executed when program starts:
+# A partir daqui, o código é executado quando o programa arranca:
 registerWithGroupManager()
 while 1:
-  print('Waiting for signal to start...')
+  print('A aguardar sinal para começar...')
   (myself, nMsgs) = waitToStart()
-  print('I am up, and my ID is: ', str(myself))
+  print('Estou ativo, e o meu ID é: ', str(myself))
 
   if nMsgs == 0:
-    print('Terminating.')
+    print('A terminar.')
     exit(0)
-
-  # Wait for other processes to be ready
-  # To Do: fix bug that causes a failure when not all processes are started within this time
-  # (fully started processes start sending data messages, which the others try to interpret as control messages) 
-  time.sleep(5)
-
-  # Create receiving message handler
-  msgHandler = MsgHandler(recvSocket, myself)
-  msgHandler.start()
-  print('Handler started')
-
-  PEERS = getListOfPeers()
-  
-  # Send handshakes
-  # To do: Must continue sending until it gets a reply from each process
-  #        Send confirmation of reply
-  for addrToSend in PEERS:
-    print('Sending handshake to ', addrToSend)
-    msg = ('READY', myself)
-    msgPack = pickle.dumps(msg)
-    sendSocket.sendto(msgPack, (addrToSend,PEER_UDP_PORT))
-    #data = recvSocket.recvfrom(128) # Handshadke confirmations have not yet been implemented
-
-  print('Main Thread: Sent all handshakes. handShakeCount=', str(handShakeCount))
-
-  while (handShakeCount < N):
-    pass  # find a better way to wait for the handshakes
-
-  # Send a sequence of data messages to all other processes 
-  conversation_starters = [
-    "Olá a todos! Alguém na escuta?",
-    "Vou lançar uma pergunta no ar para reflexão.",
-    "Alguém aí conhece uma boa piada?",
-    "Que tal falarmos sobre o tempo?",
-    "A iniciar uma nova ronda de discussões."
-  ]
-
-  # Enviar uma sequência de mensagens de dados para todos os outros processos 
-  for msgNumber in range(0, nMsgs):
-    # Esperar um tempo aleatório entre mensagens sucessivas
-    time.sleep(random.randrange(10,100)/1000)
-    msg = (myself, msgNumber)
-    msgPack = pickle.dumps(msg)
-    
-    # Obter uma frase "inicial" para a mensagem a ser enviada
-    starter_index = msgNumber % len(conversation_starters)
-    starter_phrase = conversation_starters[starter_index]
-
-    for addrToSend in PEERS:
-      sendSocket.sendto(msgPack, (addrToSend,PEER_UDP_PORT))
-      
-    print(f"[Peer {myself}] enviou: \"{starter_phrase}\" (Tópico #{msgNumber})")
-
-  # Tell all processes that I have no more messages to send
-  for addrToSend in PEERS:
-    msg = (-1,-1)
-    msgPack = pickle.dumps(msg)
-    sendSocket.sendto(msgPack, (addrToSend,PEER_UDP_PORT))
