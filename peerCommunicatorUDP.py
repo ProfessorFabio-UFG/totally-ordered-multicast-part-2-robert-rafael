@@ -62,7 +62,6 @@ def getListOfPeers():
   msg = clientSock.recv(2048)
   peer_ips = pickle.loads(msg) # Recebe a lista de IPs do GroupMngr
   
-  # --- MODIFICAÇÃO ---
   # Constrói a lista de peers com o formato (ip, porta)
   peers_with_ports = []
   for ip in peer_ips:
@@ -83,6 +82,7 @@ class MsgHandler(threading.Thread):
   def deliver_messages(self):
     """Verifica a fila e entrega mensagens que estão prontas (no topo e com todos os ACKs)."""
     global message_queue
+    
     while True:
         if not message_queue:
             break
@@ -93,6 +93,7 @@ class MsgHandler(threading.Thread):
         head_message = message_queue[0]
         
         # Verifica se a mensagem no topo da fila recebeu ACK de todos os peers
+        # O número de ACKs deve ser igual ao número total de peers (N)
         if len(head_message['acks']) == N:
             delivered_msg = message_queue.pop(0)
             
@@ -100,7 +101,6 @@ class MsgHandler(threading.Thread):
             peer_id = delivered_msg['sender_id']
             msg_content = delivered_msg['content'] # Tuplo (frase, número)
             
-            # A lógica de conversa pode ser baseada no número da mensagem original
             msg_topic_id = msg_content[1] 
 
             conversation_replies = {
@@ -115,7 +115,7 @@ class MsgHandler(threading.Thread):
             
             original_starter_phrase = msg_content[0]
 
-            print(f"[Peer {self.myself} viu] Peer {peer_id} iniciou '{original_starter_phrase}' (T:{delivered_msg['timestamp']})")
+            print(f"ENTREGUE (T:{delivered_msg['timestamp']}, P:{peer_id}): Peer {peer_id} disse '{original_starter_phrase}'")
             print(f"    -> [Peer {self.myself}] pensa: \"{selected_reply}\"")
             
             self.logList.append(delivered_msg)
@@ -129,7 +129,6 @@ class MsgHandler(threading.Thread):
     
     global handShakeCount, lamport_clock
     
-    # Esperar até que os handshakes sejam recebidos de todos os outros processos
     while handShakeCount < N:
       msgPack, addr = self.sock.recvfrom(1024)
       msg = pickle.loads(msgPack)
@@ -140,49 +139,51 @@ class MsgHandler(threading.Thread):
     print('Thread Secundária: Recebidos todos os handshakes. A entrar no loop para receber mensagens.')
 
     stopCount=0 
-    while True:                
-      msgPack, addr = self.sock.recvfrom(2048)   # receber dados do cliente
+    while stopCount < N:                
+      msgPack, addr = self.sock.recvfrom(2048)
       msg = pickle.loads(msgPack)
       
       with queue_lock:
         # Atualiza o relógio de Lamport ao receber qualquer mensagem com timestamp
-        if isinstance(msg, tuple) and len(msg) > 2 and isinstance(msg[2], int):
+        if isinstance(msg, tuple) and len(msg) > 3 and isinstance(msg[2], int):
             lamport_clock = max(lamport_clock, msg[2]) + 1
 
-        if msg[0] == 'DATA': # Formato: ('DATA', (starter_phrase, msgNumber), timestamp, sender_id)
+        msg_type = msg[0]
+
+        if msg_type == 'DATA': # Formato: ('DATA', (starter_phrase, msgNumber), timestamp, sender_id)
             _, content, timestamp, sender_id = msg
             
             # Adiciona a mensagem à fila
-            new_msg_item = {'content': content, 'timestamp': timestamp, 'sender_id': sender_id, 'acks': {self.myself}}
+            # O próprio remetente é o primeiro a "confirmar" a sua mensagem
+            new_msg_item = {'content': content, 'timestamp': timestamp, 'sender_id': sender_id, 'acks': {sender_id}}
             message_queue.append(new_msg_item)
+            print(f"Recebida DATA de {sender_id} (T:{timestamp}). A enviar ACK.")
             
             # Envia ACK para todos
             lamport_clock += 1
             ack_msg = ('ACK', timestamp, sender_id, lamport_clock, self.myself)
             ack_pack = pickle.dumps(ack_msg)
             for peer_addr in self.peers:
-                sendSocket.sendto(ack_pack, (peer_addr, PEER_UDP_PORT))
+                sendSocket.sendto(ack_pack, peer_addr)
 
-        elif msg[0] == 'ACK': # Formato: ('ACK', orig_ts, orig_sender, ack_ts, acker_id)
+        elif msg_type == 'ACK': # Formato: ('ACK', orig_ts, orig_sender, ack_ts, acker_id)
             _, orig_ts, orig_sender, _, acker_id = msg
             
             # Encontra a mensagem correspondente na fila e adiciona o ACK
             for m in message_queue:
                 if m['timestamp'] == orig_ts and m['sender_id'] == orig_sender:
                     m['acks'].add(acker_id)
+                    # print(f"ACK para (T:{orig_ts}, P:{orig_sender}) de {acker_id}. Total de ACKs: {len(m['acks'])}")
                     break
 
-        elif msg[0] == -1:   # contar as mensagens 'stop' dos outros processos
-            stopCount = stopCount + 1
-            if stopCount == N:
-                break
+        elif msg_type == -1: # Mensagem de término
+            stopCount += 1
         
         # Tenta entregar mensagens após cada evento
         self.deliver_messages()
 
     # Escrever ficheiro de log
     logFile = open('logfile'+str(self.myself)+'.log', 'w')
-    # O logList já estará ordenado devido à entrega ordenada
     logFile.writelines(str(self.logList))
     logFile.close()
     
@@ -230,20 +231,17 @@ while 1:
     print('A enviar handshake para ', addrToSend)
     msg = ('READY', myself)
     msgPack = pickle.dumps(msg)
-    sendSocket.sendto(msgPack, (addrToSend,PEER_UDP_PORT))
+    sendSocket.sendto(msgPack, addrToSend)
 
-  print('Thread Principal: Enviei todos os handshakes. handShakeCount=', str(handShakeCount))
+  print('Thread Principal: Enviei todos os handshakes.')
 
   while (handShakeCount < N):
     pass  # Espera ativa pelos handshakes
 
-  # --- MODIFICAÇÃO PARA CONVERSA COM ORDEM TOTAL ---
   conversation_starters = [
     "Olá a todos! Alguém na escuta?",
     "Vou lançar uma pergunta no ar para reflexão.",
     "Alguém aí conhece uma boa piada?",
-    "Que tal falarmos sobre o tempo?",
-    "A iniciar uma nova ronda de discussões."
   ]
 
   # Enviar uma sequência de mensagens de dados para todos os outros processos 
@@ -259,19 +257,20 @@ while 1:
         
         # A mensagem agora contém o tipo, o conteúdo, o timestamp e o ID do remetente
         content = (starter_phrase, msgNumber)
-        msg = ('DATA', content, lamport_clock, myself)
-        msgPack = pickle.dumps(msg)
+        msg_to_send = ('DATA', content, lamport_clock, myself)
+        msgPack = pickle.dumps(msg_to_send)
     
     # Envia a mensagem para todos os peers (multicast)
     for addrToSend in PEERS:
-      sendSocket.sendto(msgPack, (addrToSend,PEER_UDP_PORT))
+      sendSocket.sendto(msgPack, addrToSend)
       
-    print(f"[Peer {myself}] enviou: \"{starter_phrase}\" (Tópico #{msgNumber}) com Timestamp: {msg[2]}")
-  # --- FIM DA MODIFICAÇÃO ---
-
+    print(f"[Peer {myself}] enviou: \"{starter_phrase}\" com Timestamp: {msg_to_send[2]}")
+  
+  # Pequena espera para garantir que a maioria das mensagens/ACKs sejam processados
+  time.sleep(5)
 
   # Informar todos os processos que não tenho mais mensagens para enviar
   for addrToSend in PEERS:
     msg = (-1,-1)
     msgPack = pickle.dumps(msg)
-    sendSocket.sendto(msgPack, (addrToSend,PEER_UDP_PORT))
+    sendSocket.sendto(msgPack, addrToSend)
