@@ -98,12 +98,12 @@ class MsgHandler(threading.Thread):
         # --- MODIFICATION START ---
         # A list of conversational message formats
         chatty_messages = [
-            "Peer {peer_id} says: 'Hey! Just dropping by with message #{msg_num}!'",
-            "What's up? Peer {peer_id} checking in. My message is {msg_num}.",
-            "You've got mail! From Peer {peer_id}, and it reads: {msg_num}.",
-            "Psst... Peer {peer_id} here. I've got a secret for you: it's {msg_num}.",
-            "Broadcast from Peer {peer_id}: The magic number for today is {msg_num}.",
-            "Incoming transmission from the great Peer {peer_id}: '{msg_num}'"
+           "O colega {peer_id} diz: 'Oi! Só passando aqui com a mensagem #{msg_num}!'",
+            "E aí? O colega {peer_id} está aqui. Minha mensagem é {msg_num}.",
+            "Você recebeu uma mensagem! Do colega {peer_id}, e diz: {msg_num}.",
+            "Psiu... O colega {peer_id} aqui. Tenho um segredo para você: é {msg_num}.",
+            "Transmissão do colega {peer_id}: O número mágico para hoje é {msg_num}.",
+            "Transmissão recebida do grande colega {peer_id}: '{msg_num}'"
         ]
         
         peer_id = msg[0]
