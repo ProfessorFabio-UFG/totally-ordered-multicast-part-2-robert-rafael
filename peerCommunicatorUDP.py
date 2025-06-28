@@ -66,8 +66,8 @@ def getListOfPeers():
   return PEERS
 
 class MsgHandler(threading.Thread):
-  def __init__(self, sock, myself, peers_list):
-    threading.Thread.__init__(self)
+  def _init_(self, sock, myself, peers_list):
+    threading.Thread._init_(self)
     self.sock = sock
     self.myself = myself
     self.peers = peers_list
@@ -208,3 +208,63 @@ while 1:
   if nMsgs == 0:
     print('A terminar.')
     exit(0)
+
+  time.sleep(5)
+
+  PEERS = getListOfPeers()
+  
+  # Criar handler de receção de mensagens
+  msgHandler = MsgHandler(recvSocket, myself, PEERS)
+  msgHandler.start()
+  print('Handler iniciado')
+  
+  # Enviar handshakes
+  for addrToSend in PEERS:
+    print('A enviar handshake para ', addrToSend)
+    msg = ('READY', myself)
+    msgPack = pickle.dumps(msg)
+    sendSocket.sendto(msgPack, (addrToSend,PEER_UDP_PORT))
+
+  print('Thread Principal: Enviei todos os handshakes. handShakeCount=', str(handShakeCount))
+
+  while (handShakeCount < N):
+    pass  # Espera ativa pelos handshakes
+
+  # --- MODIFICAÇÃO PARA CONVERSA COM ORDEM TOTAL ---
+  conversation_starters = [
+    "Olá a todos! Alguém na escuta?",
+    "Vou lançar uma pergunta no ar para reflexão.",
+    "Alguém aí conhece uma boa piada?",
+    "Que tal falarmos sobre o tempo?",
+    "A iniciar uma nova ronda de discussões."
+  ]
+
+  # Enviar uma sequência de mensagens de dados para todos os outros processos 
+  for msgNumber in range(0, nMsgs):
+    time.sleep(random.randrange(100,500)/1000)
+    
+    with queue_lock:
+        # Incrementar o relógio ANTES de enviar
+        lamport_clock += 1
+        
+        starter_index = msgNumber % len(conversation_starters)
+        starter_phrase = conversation_starters[starter_index]
+        
+        # A mensagem agora contém o tipo, o conteúdo, o timestamp e o ID do remetente
+        content = (starter_phrase, msgNumber)
+        msg = ('DATA', content, lamport_clock, myself)
+        msgPack = pickle.dumps(msg)
+    
+    # Envia a mensagem para todos os peers (multicast)
+    for addrToSend in PEERS:
+      sendSocket.sendto(msgPack, (addrToSend,PEER_UDP_PORT))
+      
+    print(f"[Peer {myself}] enviou: \"{starter_phrase}\" (Tópico #{msgNumber}) com Timestamp: {msg[2]}")
+  # --- FIM DA MODIFICAÇÃO ---
+
+
+  # Informar todos os processos que não tenho mais mensagens para enviar
+  for addrToSend in PEERS:
+    msg = (-1,-1)
+    msgPack = pickle.dumps(msg)
+    sendSocket.sendto(msgPack, (addrToSend,PEER_UDP_PORT))
