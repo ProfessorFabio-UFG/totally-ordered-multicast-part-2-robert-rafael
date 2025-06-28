@@ -60,14 +60,21 @@ def getListOfPeers():
   print ('A obter a lista de peers do gestor de grupo: ', req)
   clientSock.send(msg)
   msg = clientSock.recv(2048)
-  PEERS = pickle.loads(msg)
-  print ('Lista de peers obtida: ', PEERS)
+  peer_ips = pickle.loads(msg) # Recebe a lista de IPs do GroupMngr
+  
+  # --- MODIFICAÇÃO ---
+  # Constrói a lista de peers com o formato (ip, porta)
+  peers_with_ports = []
+  for ip in peer_ips:
+      peers_with_ports.append((ip, PEER_UDP_PORT))
+
+  print ('Lista de peers obtida e processada: ', peers_with_ports)
   clientSock.close()
-  return PEERS
+  return peers_with_ports # Retorna a lista completa de endereços
 
 class MsgHandler(threading.Thread):
-  def _init_(self, sock, myself, peers_list):
-    threading.Thread._init_(self)
+  def __init__(self, sock, myself, peers_list):
+    threading.Thread.__init__(self)
     self.sock = sock
     self.myself = myself
     self.peers = peers_list
