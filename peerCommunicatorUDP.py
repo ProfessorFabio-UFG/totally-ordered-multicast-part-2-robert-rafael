@@ -84,6 +84,7 @@ class MsgHandler(threading.Thread):
     global message_queue
     
     while True:
+      with queue_lock:
         if not message_queue:
             break
         
@@ -118,7 +119,8 @@ class MsgHandler(threading.Thread):
             print(f"ENTREGUE (T:{delivered_msg['timestamp']}, P:{peer_id}): Peer {peer_id} disse '{original_starter_phrase}'")
             print(f"    -> [Peer {self.myself}] pensa: \"{selected_reply}\"")
             
-            self.logList.append(delivered_msg)
+            # **CORREÇÃO**: Adicionar apenas o conteúdo ao log para corresponder ao que o servidor espera
+            self.logList.append(msg_content)
         else:
             # Se a mensagem no topo não está pronta, não podemos entregar mais nada
             break
@@ -154,10 +156,8 @@ class MsgHandler(threading.Thread):
             _, content, timestamp, sender_id = msg
             
             # Adiciona a mensagem à fila
-            # O próprio remetente é o primeiro a "confirmar" a sua mensagem
             new_msg_item = {'content': content, 'timestamp': timestamp, 'sender_id': sender_id, 'acks': {sender_id}}
             message_queue.append(new_msg_item)
-            print(f"Recebida DATA de {sender_id} (T:{timestamp}). A enviar ACK.")
             
             # Envia ACK para todos
             lamport_clock += 1
@@ -173,21 +173,22 @@ class MsgHandler(threading.Thread):
             for m in message_queue:
                 if m['timestamp'] == orig_ts and m['sender_id'] == orig_sender:
                     m['acks'].add(acker_id)
-                    # print(f"ACK para (T:{orig_ts}, P:{orig_sender}) de {acker_id}. Total de ACKs: {len(m['acks'])}")
                     break
 
         elif msg_type == -1: # Mensagem de término
             stopCount += 1
-        
-        # Tenta entregar mensagens após cada evento
-        self.deliver_messages()
+      
+      # Tenta entregar mensagens após cada evento (fora do lock para evitar deadlocks)
+      self.deliver_messages()
 
     # Escrever ficheiro de log
     logFile = open('logfile'+str(self.myself)+'.log', 'w')
+    # Ordena o log final por segurança, embora a entrega ordenada já deva garantir isso
+    self.logList.sort(key=lambda x: x[1])
     logFile.writelines(str(self.logList))
     logFile.close()
     
-    print('A enviar o ficheiro de log ordenado para o servidor...')
+    print(f"Peer {self.myself} a terminar. Log final com {len(self.logList)} mensagens.")
     clientSock = socket(AF_INET, SOCK_STREAM)
     clientSock.connect((SERVER_ADDR, SERVER_PORT))
     msgPack = pickle.dumps(self.logList)
@@ -256,7 +257,7 @@ while 1:
         starter_phrase = conversation_starters[starter_index]
         
         # A mensagem agora contém o tipo, o conteúdo, o timestamp e o ID do remetente
-        content = (starter_phrase, msgNumber)
+        content = (myself, msgNumber) # O conteúdo para o log deve ser (peer_id, msg_num)
         msg_to_send = ('DATA', content, lamport_clock, myself)
         msgPack = pickle.dumps(msg_to_send)
     
@@ -266,10 +267,12 @@ while 1:
       
     print(f"[Peer {myself}] enviou: \"{starter_phrase}\" com Timestamp: {msg_to_send[2]}")
   
-  # Pequena espera para garantir que a maioria das mensagens/ACKs sejam processados
-  time.sleep(5)
+  # **CORREÇÃO**: Aumentar a espera para garantir que a maioria das mensagens/ACKs sejam processados
+  print("Todas as mensagens DATA foram enviadas. A aguardar 10 segundos para processamento de ACKs...")
+  time.sleep(10)
 
   # Informar todos os processos que não tenho mais mensagens para enviar
+  print(f"Peer {myself} a enviar sinal de término.")
   for addrToSend in PEERS:
     msg = (-1,-1)
     msgPack = pickle.dumps(msg)
